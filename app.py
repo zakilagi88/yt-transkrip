@@ -4,6 +4,7 @@ from youtube_transcript_api import YouTubeTranscriptApi
 import json
 import re
 import os
+import requests
 from urllib.parse import urlparse, parse_qs
 
 HISTORY_FILE = "history.json"
@@ -55,9 +56,51 @@ def format_time(seconds):
         return f"{hours:02d}:{minutes:02d}:{secs:02d}"
     return f"{minutes:02d}:{secs:02d}"
 
+def fetch_transcript(video_id, custom_proxy=None, use_auto=False):
+    """Fetches the transcript, handling proxies if configured."""
+    proxies = None
+    
+    # 1. Custom Proxy
+    if custom_proxy:
+        proxies = {"http": custom_proxy, "https": custom_proxy}
+        try:
+            return YouTubeTranscriptApi.get_transcript(video_id, proxies=proxies)
+        except Exception:
+            try:
+                t_list = YouTubeTranscriptApi.list_transcripts(video_id, proxies=proxies)
+                return [t for t in t_list][0].fetch()
+            except Exception as e:
+                raise Exception(f"Custom Proxy Gagal: {str(e)}")
+                
+    # 2. Auto Proxy Scraper
+    if use_auto:
+        try:
+            res = requests.get("https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=all&anonymity=all", timeout=5)
+            proxy_list = [p for p in res.text.strip().split("\\r\\n") if p]
+            
+            last_err = None
+            # Try up to 3 proxies
+            for proxy in proxy_list[:3]:
+                proxies = {"http": f"http://{proxy}", "https": f"http://{proxy}"}
+                try:
+                    return YouTubeTranscriptApi.get_transcript(video_id, proxies=proxies)
+                except Exception as e:
+                    last_err = e
+                    continue
+            raise Exception(f"Semua Auto Proxy gagal/diblokir. Error terakhir: {str(last_err)}")
+        except Exception as e:
+            raise Exception(f"Gagal mengambil proxy otomatis: {str(e)}")
+            
+    # 3. Default (No Proxy)
+    try:
+        return YouTubeTranscriptApi.get_transcript(video_id)
+    except Exception:
+        t_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        return [t for t in t_list][0].fetch()
+
+
 st.set_page_config(page_title="YouTube Transcript", layout="wide")
 
-# Custom CSS for cleaner readability and better dark mode contrast
 st.markdown("""
 <style>
 .transcript-line {
@@ -96,56 +139,53 @@ st.markdown("""
 st.title("📺 YouTube Transcript Extractor")
 st.markdown("Mudah mengekstrak, mencari, dan mengunduh transkrip dari video YouTube.")
 
-# Handle Sidebar Clicks
 if 'selected_url' not in st.session_state:
     st.session_state.selected_url = ""
+
+# Sidebar - Settings (Proxy)
+st.sidebar.header("⚙️ Pengaturan Jaringan")
+st.sidebar.markdown("<small>Gunakan ini jika di-deploy di Cloud (mengatasi blokir IP YouTube).</small>", unsafe_allow_html=True)
+use_auto_proxy = st.sidebar.checkbox("Gunakan Proxy Publik (Otomatis)", value=False, help="Mencari proxy gratis. Sering kali tidak stabil.")
+custom_proxy = st.sidebar.text_input("Custom Proxy URL:", placeholder="http://12.34.56.78:8080", help="Jika Anda punya proxy yang stabil.")
+
+st.sidebar.markdown("---")
 
 # Sidebar - History
 st.sidebar.header("🕒 Riwayat Pencarian")
 history = load_history()
 if history:
     for item in history:
-        # Provide a button to load the history item instead of a direct link
         if st.sidebar.button(f"🎥 {item['video_id']}", key=f"hist_{item['video_id']}", use_container_width=True):
             st.session_state.selected_url = item['url']
 else:
     st.sidebar.write("Belum ada riwayat.")
 
-# Main Input inside a Card with a Form
+
+# Main Input
 with ui.card(key="input_card"):
     with st.form("youtube_form"):
-        # Pre-fill with selected URL from history if available
         url_input = st.text_input("🔗 Tempelkan Link YouTube di sini:", value=st.session_state.selected_url, placeholder="https://www.youtube.com/watch?v=...")
         submit_button = st.form_submit_button("Ekstrak Transkrip")
 
 if submit_button and url_input:
-    # Clear the selected url so the input is free for next time
     st.session_state.selected_url = ""
-    
     video_id = get_video_id(url_input)
     
     if not video_id:
         st.error("Tautan YouTube tidak valid. Harap periksa kembali.")
     else:
-        # Fetching process
         if 'current_video_id' not in st.session_state or st.session_state.current_video_id != video_id:
             st.session_state.current_video_id = video_id
             try:
                 with st.spinner('Sedang mengambil transkrip...'):
-                    transcript_data = YouTubeTranscriptApi.get_transcript(video_id)
+                    transcript_data = fetch_transcript(video_id, custom_proxy=custom_proxy, use_auto=use_auto_proxy)
                     st.session_state.transcript_data = transcript_data
                     save_history(url_input, video_id)
             except Exception as e:
-                try:
-                    transcript_list = YouTubeTranscriptApi().list(video_id)
-                    transcript_data = [t for t in transcript_list][0].fetch()
-                    st.session_state.transcript_data = transcript_data
-                    save_history(url_input, video_id)
-                except Exception as inner_e:
-                    st.error(f"Gagal mengambil transkrip. Mungkin transkrip dinonaktifkan. Detail: {inner_e}")
-                    st.session_state.transcript_data = None
+                st.error(f"Gagal mengambil transkrip. Detail: {e}")
+                st.session_state.transcript_data = None
                 
-# Only show the rest if we have successfully loaded data
+# Display results
 if st.session_state.get('transcript_data') and st.session_state.get('current_video_id'):
     transcript = st.session_state.transcript_data
     video_id = st.session_state.current_video_id
@@ -157,11 +197,9 @@ if st.session_state.get('transcript_data') and st.session_state.get('current_vid
     
     st.markdown("<br>", unsafe_allow_html=True)
     
-    # Tools row inside a card (Only visible after fetching)
     with ui.card(key="tools_card"):
         col1, col2 = st.columns([3, 1])
         with col1:
-            # We use an empty string for the label since it's obvious, or a simple text
             search_query = st.text_input("🔍 Cari kata spesifik di transkrip:")
         with col2:
             st.write("")
@@ -174,7 +212,6 @@ if st.session_state.get('transcript_data') and st.session_state.get('current_vid
                 use_container_width=True
             )
     
-    # Expandable transcript display (Defaults to collapsed)
     with st.expander("📝 Buka Hasil Transkrip", expanded=False):
         count_results = 0
         transcript_html = ""
@@ -196,7 +233,6 @@ if st.session_state.get('transcript_data') and st.session_state.get('current_vid
                 transcript_html += f"<div class='transcript-line'><span class='timestamp-badge'>{timestamp}</span> {text}</div>"
                 count_results += 1
         
-        # Render all HTML at once to prevent Streamlit from lagging
         if count_results > 0:
             st.markdown(transcript_html, unsafe_allow_html=True)
         elif search_query:
