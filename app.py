@@ -56,7 +56,64 @@ def format_time(seconds):
         return f"{hours:02d}:{minutes:02d}:{secs:02d}"
     return f"{minutes:02d}:{secs:02d}"
 
-def fetch_transcript(video_id, custom_proxy=None, use_auto=False):
+def ai_transcribe_audio(video_id, api_key):
+    import tempfile
+    import yt_dlp
+    from groq import Groq
+    
+    client = Groq(api_key=api_key)
+    
+    with tempfile.TemporaryDirectory() as temp_dir:
+        output_template = os.path.join(temp_dir, "%(id)s.%(ext)s")
+        ydl_opts = {
+            'format': 'm4a/bestaudio/best',
+            'outtmpl': output_template,
+            'noplaylist': True,
+        }
+        
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info_dict = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
+                downloaded_file = ydl.prepare_filename(info_dict)
+        except Exception as e:
+            raise Exception(f"Gagal mengunduh audio: {str(e)}")
+            
+        if not os.path.exists(downloaded_file):
+            raise Exception("File audio tidak ditemukan setelah diunduh.")
+            
+        file_size_mb = os.path.getsize(downloaded_file) / (1024 * 1024)
+        if file_size_mb > 25:
+            raise Exception(f"Ukuran audio terlalu besar ({file_size_mb:.1f}MB). Batas maksimal Groq API adalah 25MB (sekitar 30 menit).")
+            
+        try:
+            with open(downloaded_file, "rb") as audio_file:
+                transcription = client.audio.transcriptions.create(
+                    file=(os.path.basename(downloaded_file), audio_file.read()),
+                    model="whisper-large-v3",
+                    response_format="verbose_json"
+                )
+        except Exception as e:
+            raise Exception(f"Gagal memproses AI Transkripsi (Cek API Key Anda): {str(e)}")
+            
+        result = []
+        # Handle dict or object representation of segments
+        segments = transcription.segments if hasattr(transcription, 'segments') else transcription.get('segments', [])
+        for seg in segments:
+            start_time = seg.get('start') if isinstance(seg, dict) else getattr(seg, 'start', 0)
+            text_seg = seg.get('text') if isinstance(seg, dict) else getattr(seg, 'text', '')
+            result.append({
+                "start": start_time,
+                "text": text_seg
+            })
+            
+        if not result:
+            # Fallback if no segments provided
+            raw_text = transcription.text if hasattr(transcription, 'text') else transcription.get('text', '')
+            result.append({"start": 0.0, "text": raw_text})
+            
+        return result
+
+def fetch_transcript(video_id, custom_proxy=None, use_auto=False, groq_api_key=None):
     """Fetches the transcript, handling proxies if configured."""
     from youtube_transcript_api import YouTubeTranscriptApi
     from youtube_transcript_api.proxies import GenericProxyConfig
@@ -67,21 +124,15 @@ def fetch_transcript(video_id, custom_proxy=None, use_auto=False):
         t_list = api.list(video_id)
         return [t for t in t_list][0].fetch()
 
-    # 1. Custom Proxy
-    if custom_proxy:
-        try:
+    # Try standard fetch first (with or without proxies)
+    try:
+        if custom_proxy:
             return get_with_proxy(custom_proxy)
-        except Exception as e:
-            raise Exception(f"Custom Proxy Gagal: {str(e)}")
-                
-    # 2. Auto Proxy Scraper
-    if use_auto:
-        try:
+            
+        if use_auto:
             res = requests.get("https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=5000&country=all&ssl=all&anonymity=all", timeout=5)
             proxy_list = [p for p in res.text.strip().split("\\r\\n") if p]
-            
             last_err = None
-            # Try up to 3 proxies
             for proxy in proxy_list[:3]:
                 proxy_url = f"http://{proxy}"
                 try:
@@ -90,11 +141,19 @@ def fetch_transcript(video_id, custom_proxy=None, use_auto=False):
                     last_err = e
                     continue
             raise Exception(f"Semua Auto Proxy gagal/diblokir. Error terakhir: {str(last_err)}")
-        except Exception as e:
-            raise Exception(f"Gagal mengambil proxy otomatis: {str(e)}")
             
-    # 3. Default (No Proxy)
-    return get_with_proxy(None)
+        # Default (No Proxy)
+        return get_with_proxy(None)
+        
+    except Exception as e:
+        error_msg = str(e)
+        if "Subtitles are disabled" in error_msg or "No transcripts" in error_msg:
+            if groq_api_key:
+                return ai_transcribe_audio(video_id, groq_api_key)
+            else:
+                raise Exception("Subtitles tidak tersedia dari YouTube. Masukkan Groq API Key di sidebar untuk meng-generate AI Transcript secara otomatis.")
+        else:
+            raise e
 
 
 st.set_page_config(page_title="YouTube Transcript", layout="wide")
@@ -140,11 +199,12 @@ st.markdown("Mudah mengekstrak, mencari, dan mengunduh transkrip dari video YouT
 if 'selected_url' not in st.session_state:
     st.session_state.selected_url = ""
 
-# Sidebar - Settings (Proxy)
-st.sidebar.header("⚙️ Pengaturan Jaringan")
-st.sidebar.markdown("<small>Gunakan ini jika di-deploy di Cloud (mengatasi blokir IP YouTube).</small>", unsafe_allow_html=True)
+# Sidebar - Settings (Proxy & AI)
+st.sidebar.header("⚙️ Pengaturan Jaringan & AI")
+st.sidebar.markdown("<small>Opsi jika video terblokir IP atau tidak memiliki Subtitle.</small>", unsafe_allow_html=True)
 use_auto_proxy = st.sidebar.checkbox("Gunakan Proxy Publik (Otomatis)", value=False, help="Mencari proxy gratis. Sering kali tidak stabil.")
 custom_proxy = st.sidebar.text_input("Custom Proxy URL:", placeholder="http://12.34.56.78:8080", help="Jika Anda punya proxy yang stabil.")
+groq_api_key = st.sidebar.text_input("Groq API Key (Opsional - Untuk AI):", type="password", help="Masukkan API Key Groq Anda agar AI bisa mendengarkan video tanpa subtitle (Batas audio: 25MB).")
 
 st.sidebar.markdown("---")
 
@@ -176,8 +236,8 @@ if submit_button and url_input:
         if 'current_video_id' not in st.session_state or st.session_state.current_video_id != video_id:
             st.session_state.current_video_id = video_id
             try:
-                with st.spinner('Sedang mengambil transkrip... Mohon tunggu (jika pakai proxy, bisa butuh waktu hingga 30 detik)'):
-                    transcript_data = fetch_transcript(video_id, custom_proxy=custom_proxy, use_auto=use_auto_proxy)
+                with st.spinner('Sedang mengambil transkrip... Mohon tunggu (jika pakai proxy/AI, bisa butuh waktu lebih lama)'):
+                    transcript_data = fetch_transcript(video_id, custom_proxy=custom_proxy, use_auto=use_auto_proxy, groq_api_key=groq_api_key)
                     st.session_state.transcript_data = transcript_data
                     save_history(url_input, video_id)
             except Exception as e:
