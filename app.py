@@ -134,7 +134,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📺 YouTube Transcript Extractor")
+st.title("📺 YT Transkrip")
 st.markdown("Mudah mengekstrak, mencari, dan mengunduh transkrip dari video YouTube.")
 
 if 'selected_url' not in st.session_state:
@@ -160,7 +160,8 @@ else:
 
 
 # Main Input
-with ui.card(key="input_card"):
+st.markdown("### 📥 Masukkan Link YouTube")
+with st.container():
     with st.form("youtube_form"):
         url_input = st.text_input("🔗 Tempelkan Link YouTube di sini:", value=st.session_state.selected_url, placeholder="https://www.youtube.com/watch?v=...")
         submit_button = st.form_submit_button("Ekstrak Transkrip")
@@ -175,7 +176,7 @@ if submit_button and url_input:
         if 'current_video_id' not in st.session_state or st.session_state.current_video_id != video_id:
             st.session_state.current_video_id = video_id
             try:
-                with st.spinner('Sedang mengambil transkrip...'):
+                with st.spinner('Sedang mengambil transkrip... Mohon tunggu (jika pakai proxy, bisa butuh waktu hingga 30 detik)'):
                     transcript_data = fetch_transcript(video_id, custom_proxy=custom_proxy, use_auto=use_auto_proxy)
                     st.session_state.transcript_data = transcript_data
                     save_history(url_input, video_id)
@@ -193,9 +194,9 @@ if st.session_state.get('transcript_data') and st.session_state.get('current_vid
         for t in transcript
     ])
     
-    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("<hr>", unsafe_allow_html=True)
     
-    with ui.card(key="tools_card"):
+    with st.container():
         col1, col2 = st.columns([3, 1])
         with col1:
             search_query = st.text_input("🔍 Cari kata spesifik di transkrip:")
@@ -210,6 +211,7 @@ if st.session_state.get('transcript_data') and st.session_state.get('current_vid
                 use_container_width=True
             )
     
+    st.markdown("<br>", unsafe_allow_html=True)
     with st.expander("📝 Buka Hasil Transkrip", expanded=False):
         count_results = 0
         transcript_html = ""
