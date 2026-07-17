@@ -58,19 +58,21 @@ def format_time(seconds):
 
 def fetch_transcript(video_id, custom_proxy=None, use_auto=False):
     """Fetches the transcript, handling proxies if configured."""
-    proxies = None
+    from youtube_transcript_api import YouTubeTranscriptApi
+    from youtube_transcript_api.proxies import GenericProxyConfig
     
+    def get_with_proxy(proxy_url):
+        config = GenericProxyConfig(http_url=proxy_url, https_url=proxy_url) if proxy_url else None
+        api = YouTubeTranscriptApi(proxy_config=config)
+        t_list = api.list(video_id)
+        return [t for t in t_list][0].fetch()
+
     # 1. Custom Proxy
     if custom_proxy:
-        proxies = {"http": custom_proxy, "https": custom_proxy}
         try:
-            return YouTubeTranscriptApi.get_transcript(video_id, proxies=proxies)
-        except Exception:
-            try:
-                t_list = YouTubeTranscriptApi.list_transcripts(video_id, proxies=proxies)
-                return [t for t in t_list][0].fetch()
-            except Exception as e:
-                raise Exception(f"Custom Proxy Gagal: {str(e)}")
+            return get_with_proxy(custom_proxy)
+        except Exception as e:
+            raise Exception(f"Custom Proxy Gagal: {str(e)}")
                 
     # 2. Auto Proxy Scraper
     if use_auto:
@@ -81,9 +83,9 @@ def fetch_transcript(video_id, custom_proxy=None, use_auto=False):
             last_err = None
             # Try up to 3 proxies
             for proxy in proxy_list[:3]:
-                proxies = {"http": f"http://{proxy}", "https": f"http://{proxy}"}
+                proxy_url = f"http://{proxy}"
                 try:
-                    return YouTubeTranscriptApi.get_transcript(video_id, proxies=proxies)
+                    return get_with_proxy(proxy_url)
                 except Exception as e:
                     last_err = e
                     continue
@@ -92,11 +94,7 @@ def fetch_transcript(video_id, custom_proxy=None, use_auto=False):
             raise Exception(f"Gagal mengambil proxy otomatis: {str(e)}")
             
     # 3. Default (No Proxy)
-    try:
-        return YouTubeTranscriptApi.get_transcript(video_id)
-    except Exception:
-        t_list = YouTubeTranscriptApi.list_transcripts(video_id)
-        return [t for t in t_list][0].fetch()
+    return get_with_proxy(None)
 
 
 st.set_page_config(page_title="YouTube Transcript", layout="wide")
