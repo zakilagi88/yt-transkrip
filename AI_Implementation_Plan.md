@@ -1,36 +1,29 @@
 # Goal Description
-Menambahkan fitur **AI Auto-Transcription (Speech-to-Text)** untuk mengatasi video YouTube yang sama sekali tidak memiliki *subtitle* atau *auto-caption* (termasuk video *live* berbahasa Indonesia).
+Mengatasi keterbatasan durasi video (pemotongan 25MB / ~30 menit) menggunakan layanan yang **100% Gratis** untuk video panjang hingga 3 jam.
 
-## Akar Masalah
-Library `youtube-transcript-api` hanya bertugas "mencuri/mengambil" teks yang sudah disiapkan oleh YouTube. Jika teks itu tidak ada, ia akan menyerah. 
-Untuk mendapatkan teks dari video yang kosong, kita harus **mendengarkan audionya dan mengubahnya menjadi teks menggunakan AI**.
+## Pilihan Solusi Gratis (User Review Required)
 
-## Solusi Arsitektur
-Kita akan mengubah alur kerja aplikasi kita jika video tidak memiliki transkrip bawaan:
-1. **Unduh Audio:** Menggunakan `yt-dlp` (ekstrak audio MP3/M4A dari YouTube).
-2. **Transkripsi dengan AI:** Mengirimkan audio tersebut ke model AI *Speech-to-Text* (seperti **Whisper**) yang sangat pintar memahami bahasa Indonesia.
+Kami memiliki dua metode gratis untuk memproses video berdurasi sangat panjang:
 
-## User Review Required & Open Questions
+### Opsi 1: Google Gemini 1.5 Flash API (100% GRATIS) - DIREKOMENDASIKAN
+Google menyediakan akses API **Gemini 1.5 Flash secara GRATIS** melalui Google AI Studio. 
+- **Kelebihan:** 
+  - Mendukung file audio berukuran raksasa (hingga 2 Gigabyte / ~9 jam video!).
+  - Sangat cepat dan sangat akurat untuk bahasa Indonesia karena model Gemini memahami konteks percakapan dengan sangat baik.
+  - Alur kodenya bersih dan tidak membebani komputer Anda.
+- **Kekurangan:** Anda perlu mendaftar untuk mendapatkan kunci API Gemini gratis di Google AI Studio (hanya butuh akun Gmail).
 
-> [!WARNING]
-> Menjalankan AI untuk mendengar dan mengetik teks membutuhkan tenaga komputasi yang besar. Karena aplikasi ini ditargetkan untuk di-deploy di **Streamlit Cloud (Gratis)**, server mereka tidak cukup kuat untuk menjalankan AI ini secara mandiri (akan langsung *crash* karena kehabisan RAM).
-
-Oleh karena itu, Anda harus memilih salah satu dari dua opsi berikut:
-
-### Opsi 1: Menggunakan API AI Cloud (Sangat Direkomendasikan)
-Kita akan menyambungkan aplikasi kita ke layanan penyedia AI seperti **Groq** atau **OpenAI**. 
-- **Cara Kerja:** Aplikasi mendownload audio berukuran kecil -> Dikirim ke server Groq -> Groq membalas dengan teks transkrip instan.
-- **Kelebihan:** Sangat cepat (hanya hitungan detik), sangat akurat untuk Bahasa Indonesia, dan 100% lancar di Streamlit Cloud.
-- **Syarat:** Anda harus mendaftar dan menempelkan **API Key** (Kunci Akses) di aplikasi. *(Catatan: Saat ini API Groq menyediakan akses gratis yang sangat cepat untuk model Whisper).*
-
-### Opsi 2: Menjalankan AI Lokal (Hanya untuk Localhost)
-Kita menginstal model AI Whisper langsung di dalam kode Python kita.
-- **Cara Kerja:** Komputer Anda sendiri yang akan mendengarkan audio dan mengetik teksnya.
-- **Kelebihan:** Gratis 100% selamanya, tidak butuh API Key.
-- **Kekurangan Utama:** **TIDAK BISA** di-deploy di Streamlit Cloud (pasti gagal). Prosesnya lambat (bisa bermenit-menit tergantung spesifikasi Laptop/PC Anda). Anda juga harus menginstal *software* tambahan bernama `FFmpeg` di komputer Anda.
+### Opsi 2: Pemotongan Audio Otomatis (Audio Chunking) via Groq (100% GRATIS)
+Jika Anda bersikeras tetap ingin menggunakan API Groq yang sudah didaftarkan sebelumnya, kita bisa mengakalinya lewat kode program.
+- **Kelebihan:** Tidak perlu mendaftar API baru lagi.
+- **Kekurangan:** 
+  - Komputer Anda harus memotong file audio secara otomatis setiap 20 menit sekali, kemudian mengirimkannya satu per satu ke Groq, lalu menggabungkannya kembali.
+  - Memerlukan instalasi *software* tambahan bernama `FFmpeg` di komputer Anda agar program Python bisa memotong audio.
+  - Proses transkripsinya menjadi jauh lebih lama karena harus mengantri banyak file ke API.
 
 ## Tindakan Selanjutnya
-Beri tahu saya di chat, **Opsi mana yang Anda pilih (Opsi 1 atau Opsi 2)?** 
-Jika memilih Opsi 1, apakah Anda setuju menggunakan **Groq API** (karena gratis dan cepat)? 
+Beri tahu saya di chat, **Opsi mana yang Anda pilih?**
+- Jika memilih **Opsi 1 (Gemini)**, saya akan mengubah kode ke Gemini dan memandu Anda mendapatkan API Key gratisnya dalam 2 langkah mudah.
+- Jika memilih **Opsi 2 (Groq Chunking)**, kita harus menginstal FFmpeg terlebih dahulu.
 
-Setelah Anda memilih, tekan tombol **Proceed** atau balas chat, dan saya akan merombak kodenya.
+Setelah Anda memilih, ketik pilihan Anda di chat atau klik **Proceed**!

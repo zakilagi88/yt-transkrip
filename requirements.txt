@@ -2,4 +2,4 @@ streamlit
 youtube-transcript-api
 streamlit-shadcn-ui
 yt-dlp
-groq
+google-generativeai

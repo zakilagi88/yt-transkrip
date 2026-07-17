@@ -56,12 +56,13 @@ def format_time(seconds):
         return f"{hours:02d}:{minutes:02d}:{secs:02d}"
     return f"{minutes:02d}:{secs:02d}"
 
-def ai_transcribe_audio(video_id, api_key):
+def gemini_transcribe_audio(video_id, api_key):
     import tempfile
+    import time
     import yt_dlp
-    from groq import Groq
+    import google.generativeai as genai
     
-    client = Groq(api_key=api_key)
+    genai.configure(api_key=api_key)
     
     with tempfile.TemporaryDirectory() as temp_dir:
         output_template = os.path.join(temp_dir, "%(id)s.%(ext)s")
@@ -81,39 +82,56 @@ def ai_transcribe_audio(video_id, api_key):
         if not os.path.exists(downloaded_file):
             raise Exception("File audio tidak ditemukan setelah diunduh.")
             
-        file_size_mb = os.path.getsize(downloaded_file) / (1024 * 1024)
-        if file_size_mb > 25:
-            raise Exception(f"Ukuran audio terlalu besar ({file_size_mb:.1f}MB). Batas maksimal Groq API adalah 25MB (sekitar 30 menit).")
-            
         try:
-            with open(downloaded_file, "rb") as audio_file:
-                transcription = client.audio.transcriptions.create(
-                    file=(os.path.basename(downloaded_file), audio_file.read()),
-                    model="whisper-large-v3",
-                    response_format="verbose_json"
-                )
+            # Upload the audio file to Google AI
+            audio_file = genai.upload_file(path=downloaded_file)
+            
+            # Wait for file processing to complete
+            while audio_file.state.name == "PROCESSING":
+                time.sleep(2)
+                audio_file = genai.get_file(audio_file.name)
+                
+            if audio_file.state.name == "FAILED":
+                raise Exception("Gagal memproses file audio di server Google.")
+                
+            # Transcribe using Gemini 1.5 Flash
+            model = genai.GenerativeModel("gemini-1.5-flash")
+            response = model.generate_content([
+                audio_file,
+                "Transcribe this audio precisely. Return the transcript with timestamps at the beginning of each sentence or logical segment in the format: [HH:MM:SS] Text. Write the transcript in the original language of the audio (Indonesian)."
+            ])
+            
+            # Clean up the file on the cloud
+            audio_file.delete()
+            
+            # Parse segments
+            import re
+            result = []
+            pattern = re.compile(r"\[(?:(\d{1,2}):)?(\d{2}):(\d{2})\]\s*(.*)")
+            
+            for line in response.text.split("\n"):
+                cleaned_line = line.replace("**", "").replace("- ", "").strip()
+                match = pattern.match(cleaned_line)
+                if match:
+                    h, m, s, content = match.groups()
+                    h = int(h) if h else 0
+                    m = int(m)
+                    s = int(s)
+                    start_seconds = h * 3600 + m * 60 + s
+                    result.append({
+                        "start": start_seconds,
+                        "text": content.strip()
+                    })
+            
+            if not result:
+                # Fallback if regex failed but we have text
+                result.append({"start": 0.0, "text": response.text})
+                
+            return result
         except Exception as e:
             raise Exception(f"Gagal memproses AI Transkripsi (Cek API Key Anda): {str(e)}")
-            
-        result = []
-        # Handle dict or object representation of segments
-        segments = transcription.segments if hasattr(transcription, 'segments') else transcription.get('segments', [])
-        for seg in segments:
-            start_time = seg.get('start') if isinstance(seg, dict) else getattr(seg, 'start', 0)
-            text_seg = seg.get('text') if isinstance(seg, dict) else getattr(seg, 'text', '')
-            result.append({
-                "start": start_time,
-                "text": text_seg
-            })
-            
-        if not result:
-            # Fallback if no segments provided
-            raw_text = transcription.text if hasattr(transcription, 'text') else transcription.get('text', '')
-            result.append({"start": 0.0, "text": raw_text})
-            
-        return result
 
-def fetch_transcript(video_id, custom_proxy=None, use_auto=False, groq_api_key=None):
+def fetch_transcript(video_id, custom_proxy=None, use_auto=False, gemini_api_key=None):
     """Fetches the transcript, handling proxies if configured."""
     from youtube_transcript_api import YouTubeTranscriptApi
     from youtube_transcript_api.proxies import GenericProxyConfig
@@ -148,10 +166,10 @@ def fetch_transcript(video_id, custom_proxy=None, use_auto=False, groq_api_key=N
     except Exception as e:
         error_msg = str(e)
         if "Subtitles are disabled" in error_msg or "No transcripts" in error_msg:
-            if groq_api_key:
-                return ai_transcribe_audio(video_id, groq_api_key)
+            if gemini_api_key:
+                return gemini_transcribe_audio(video_id, gemini_api_key)
             else:
-                raise Exception("Subtitles tidak tersedia dari YouTube. Masukkan Groq API Key di sidebar untuk meng-generate AI Transcript secara otomatis.")
+                raise Exception("Subtitles tidak tersedia dari YouTube. Masukkan Gemini API Key di sidebar untuk meng-generate AI Transcript secara otomatis.")
         else:
             raise e
 
@@ -204,7 +222,7 @@ st.sidebar.header("⚙️ Pengaturan Jaringan & AI")
 st.sidebar.markdown("<small>Opsi jika video terblokir IP atau tidak memiliki Subtitle.</small>", unsafe_allow_html=True)
 use_auto_proxy = st.sidebar.checkbox("Gunakan Proxy Publik (Otomatis)", value=False, help="Mencari proxy gratis. Sering kali tidak stabil.")
 custom_proxy = st.sidebar.text_input("Custom Proxy URL:", placeholder="http://12.34.56.78:8080", help="Jika Anda punya proxy yang stabil.")
-groq_api_key = st.sidebar.text_input("Groq API Key (Opsional - Untuk AI):", type="password", help="Masukkan API Key Groq Anda agar AI bisa mendengarkan video tanpa subtitle (Batas audio: 25MB).")
+gemini_api_key = st.sidebar.text_input("Gemini API Key (Opsional - Untuk AI):", type="password", help="Masukkan API Key Gemini Anda (dapatkan gratis di Google AI Studio) agar AI bisa mendengarkan video tanpa subtitle.")
 
 st.sidebar.markdown("---")
 
@@ -237,7 +255,7 @@ if submit_button and url_input:
             st.session_state.current_video_id = video_id
             try:
                 with st.spinner('Sedang mengambil transkrip... Mohon tunggu (jika pakai proxy/AI, bisa butuh waktu lebih lama)'):
-                    transcript_data = fetch_transcript(video_id, custom_proxy=custom_proxy, use_auto=use_auto_proxy, groq_api_key=groq_api_key)
+                    transcript_data = fetch_transcript(video_id, custom_proxy=custom_proxy, use_auto=use_auto_proxy, gemini_api_key=gemini_api_key)
                     st.session_state.transcript_data = transcript_data
                     save_history(url_input, video_id)
             except Exception as e:
