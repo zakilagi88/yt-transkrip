@@ -61,17 +61,21 @@ def gemini_transcribe_audio(video_id, api_key):
     import time
     import yt_dlp
     import google.generativeai as genai
+    import imageio_ffmpeg
+    import subprocess
+    import glob
     
     genai.configure(api_key=api_key)
     
     with tempfile.TemporaryDirectory() as temp_dir:
-        output_template = os.path.join(temp_dir, "%(id)s.%(ext)s")
+        output_template = os.path.join(temp_dir, "input.%(ext)s")
         ydl_opts = {
             'format': 'm4a/bestaudio/best',
             'outtmpl': output_template,
             'noplaylist': True,
         }
         
+        # 1. Download best audio
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info_dict = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
@@ -82,54 +86,87 @@ def gemini_transcribe_audio(video_id, api_key):
         if not os.path.exists(downloaded_file):
             raise Exception("File audio tidak ditemukan setelah diunduh.")
             
+        # 2. Split audio into 10-minute (600s) chunks using ffmpeg
+        ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+        chunk_pattern = os.path.join(temp_dir, "chunk_%03d.m4a")
+        
+        split_cmd = [
+            ffmpeg_path,
+            "-y",
+            "-i", downloaded_file,
+            "-f", "segment",
+            "-segment_time", "600",
+            "-c", "copy",
+            chunk_pattern
+        ]
+        
         try:
-            # Upload the audio file to Google AI
-            audio_file = genai.upload_file(path=downloaded_file)
-            
-            # Wait for file processing to complete
-            while audio_file.state.name == "PROCESSING":
-                time.sleep(2)
-                audio_file = genai.get_file(audio_file.name)
-                
-            if audio_file.state.name == "FAILED":
-                raise Exception("Gagal memproses file audio di server Google.")
-                
-            # Transcribe using Gemini 1.5 Flash
-            model = genai.GenerativeModel("gemini-1.5-flash")
-            response = model.generate_content([
-                audio_file,
-                "Transcribe this audio precisely. Return the transcript with timestamps at the beginning of each sentence or logical segment in the format: [HH:MM:SS] Text. Write the transcript in the original language of the audio (Indonesian)."
-            ])
-            
-            # Clean up the file on the cloud
-            audio_file.delete()
-            
-            # Parse segments
-            import re
-            result = []
-            pattern = re.compile(r"\[(?:(\d{1,2}):)?(\d{2}):(\d{2})\]\s*(.*)")
-            
-            for line in response.text.split("\n"):
-                cleaned_line = line.replace("**", "").replace("- ", "").strip()
-                match = pattern.match(cleaned_line)
-                if match:
-                    h, m, s, content = match.groups()
-                    h = int(h) if h else 0
-                    m = int(m)
-                    s = int(s)
-                    start_seconds = h * 3600 + m * 60 + s
-                    result.append({
-                        "start": start_seconds,
-                        "text": content.strip()
-                    })
-            
-            if not result:
-                # Fallback if regex failed but we have text
-                result.append({"start": 0.0, "text": response.text})
-                
-            return result
+            subprocess.run(split_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
         except Exception as e:
-            raise Exception(f"Gagal memproses AI Transkripsi (Cek API Key Anda): {str(e)}")
+            raise Exception(f"Gagal memotong audio menjadi segmen: {str(e)}")
+            
+        # 3. Find and sort chunks
+        chunk_files = sorted(glob.glob(os.path.join(temp_dir, "chunk_*.m4a")))
+        if not chunk_files:
+            raise Exception("Gagal memotong audio. Tidak ada file chunk yang dihasilkan.")
+            
+        result = []
+        import re
+        pattern = re.compile(r"\[(?:(\d{1,2}):)?(\d{2}):(\d{2})\]\s*(.*)")
+        
+        total_chunks = len(chunk_files)
+        # We can display a progress message on Streamlit if we use st.info but since this is a background function, 
+        # let's write to output or return segments smoothly
+        for idx, chunk_file in enumerate(chunk_files):
+            offset_seconds = idx * 600
+            
+            try:
+                # Upload the chunk
+                audio_file = genai.upload_file(path=chunk_file)
+                
+                # Wait for file processing to complete
+                while audio_file.state.name == "PROCESSING":
+                    time.sleep(2)
+                    audio_file = genai.get_file(audio_file.name)
+                    
+                if audio_file.state.name == "FAILED":
+                    raise Exception(f"Gagal memproses segmen {idx+1} di Google AI.")
+                    
+                # Transcribe using Gemini 1.5 Flash
+                model = genai.GenerativeModel("gemini-1.5-flash")
+                response = model.generate_content([
+                    audio_file,
+                    "Transcribe this audio precisely. Return the transcript with timestamps at the beginning of each sentence or logical segment in the format: [HH:MM:SS] Text. Write the transcript in the original language of the audio (Indonesian)."
+                ])
+                
+                # Clean up the file on the cloud
+                audio_file.delete()
+                
+                # Parse segments
+                for line in response.text.split("\n"):
+                    cleaned_line = line.replace("**", "").replace("- ", "").strip()
+                    match = pattern.match(cleaned_line)
+                    if match:
+                        h, m, s, content = match.groups()
+                        h = int(h) if h else 0
+                        m = int(m)
+                        s = int(s)
+                        start_seconds = offset_seconds + (h * 3600 + m * 60 + s)
+                        result.append({
+                            "start": start_seconds,
+                            "text": content.strip()
+                        })
+                
+                # Delay to prevent rate limits
+                if idx < total_chunks - 1:
+                    time.sleep(10)
+            except Exception as e:
+                raise Exception(f"Gagal memproses segmen {idx+1} dari {total_chunks}: {str(e)}")
+                
+        if not result:
+            raise Exception("Gagal menghasilkan transkrip dari segmen audio.")
+            
+        return result
 
 def fetch_transcript(video_id, custom_proxy=None, use_auto=False, gemini_api_key=None):
     """Fetches the transcript, handling proxies if configured."""
